@@ -46,6 +46,33 @@ import { UriTemplate, Variables } from "../shared/uriTemplate.js";
 import { RequestHandlerExtra } from "../shared/protocol.js";
 import { Transport } from "../shared/transport.js";
 
+type Removed<T> = T extends object
+  ? { [K in Exclude<keyof T, "additionalProperties">]: Removed<T[K]> }
+  : T;
+
+export const recursiveRemoveAdditionalPropertiesFromJsonSchema = <T>(obj: T): Removed<T> => {
+  if (obj === null || obj === undefined || typeof obj !== "object") {
+    return obj as Removed<T>;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(recursiveRemoveAdditionalPropertiesFromJsonSchema) as unknown as Removed<T>;
+  }
+  const newObj: T = { ...obj }; // Create a shallow copy for the current level
+
+  for (const key in newObj) {
+    if (newObj[key] != null) {
+      newObj[key] = recursiveRemoveAdditionalPropertiesFromJsonSchema(
+        newObj[key]
+      ) as T[typeof key];
+    }
+  }
+  if (newObj?.["additionalProperties" as keyof typeof newObj] != null) {
+    delete newObj["additionalProperties" as keyof typeof newObj];
+  }
+  return newObj as Removed<T>;
+};
+
 /**
  * High-level MCP server that provides a simpler API for working with resources, tools, and prompts.
  * For advanced usage (like sending notifications or setting custom request handlers), use the underlying
@@ -90,7 +117,7 @@ export class McpServer {
     if (this._toolHandlersInitialized) {
       return;
     }
-    
+
     this.server.assertCanSetRequestHandler(
       ListToolsRequestSchema.shape.method.value,
     );
@@ -111,14 +138,20 @@ export class McpServer {
           ([, tool]) => tool.enabled,
         ).map(
           ([name, tool]): Tool => {
+            let inputSchema: Tool["inputSchema"];
+            if (tool.inputSchema) {
+              inputSchema = recursiveRemoveAdditionalPropertiesFromJsonSchema(
+                zodToJsonSchema(tool.inputSchema, {
+                  strictUnions: true,
+                }),
+              ) as Tool["inputSchema"];
+            } else {
+              inputSchema = EMPTY_OBJECT_JSON_SCHEMA;
+            }
             return {
               name,
               description: tool.description,
-              inputSchema: tool.inputSchema
-                ? (zodToJsonSchema(tool.inputSchema, {
-                    strictUnions: true,
-                  }) as Tool["inputSchema"])
-                : EMPTY_OBJECT_JSON_SCHEMA,
+              inputSchema: inputSchema,
               annotations: tool.annotations,
             };
           },
@@ -398,7 +431,7 @@ export class McpServer {
     );
 
     this.setCompletionRequestHandler();
-    
+
     this._resourceHandlersInitialized = true;
   }
 
@@ -481,7 +514,7 @@ export class McpServer {
     );
 
     this.setCompletionRequestHandler();
-    
+
     this._promptHandlersInitialized = true;
   }
 
@@ -609,7 +642,7 @@ export class McpServer {
   /**
    * Registers a tool taking either a parameter schema for validation or annotations for additional metadata.
    * This unified overload handles both `tool(name, paramsSchema, cb)` and `tool(name, annotations, cb)` cases.
-   * 
+   *
    * Note: We use a union type for the second parameter because TypeScript cannot reliably disambiguate
    * between ToolAnnotations and ZodRawShape during overload resolution, as both are plain object types.
    */
@@ -621,9 +654,9 @@ export class McpServer {
 
   /**
    * Registers a tool `name` (with a description) taking either parameter schema or annotations.
-   * This unified overload handles both `tool(name, description, paramsSchema, cb)` and 
+   * This unified overload handles both `tool(name, description, paramsSchema, cb)` and
    * `tool(name, description, annotations, cb)` cases.
-   * 
+   *
    * Note: We use a union type for the third parameter because TypeScript cannot reliably disambiguate
    * between ToolAnnotations and ZodRawShape during overload resolution, as both are plain object types.
    */
@@ -633,7 +666,7 @@ export class McpServer {
     paramsSchemaOrAnnotations: Args | ToolAnnotations,
     cb: ToolCallback<Args>,
   ): RegisteredTool;
-  
+
   /**
    * Registers a tool with both parameter schema and annotations.
    */
@@ -643,7 +676,7 @@ export class McpServer {
     annotations: ToolAnnotations,
     cb: ToolCallback<Args>,
   ): RegisteredTool;
-  
+
   /**
    * Registers a tool with description, parameter schema, and annotations.
    */
@@ -659,7 +692,7 @@ export class McpServer {
     if (this._registeredTools[name]) {
       throw new Error(`Tool ${name} is already registered`);
     }
-    
+
     // Helper to check if an object is a Zod schema (ZodRawShape)
     const isZodRawShape = (obj: unknown): obj is ZodRawShape => {
       if (typeof obj !== "object" || obj === null) return false;
@@ -674,17 +707,17 @@ export class McpServer {
 
     let paramsSchema: ZodRawShape | undefined;
     let annotations: ToolAnnotations | undefined;
-    
+
     // Handle the different overload combinations
     if (rest.length > 1) {
       // We have at least two more args before the callback
       const firstArg = rest[0];
-      
+
       if (isZodRawShape(firstArg)) {
         // We have a params schema as the first arg
         paramsSchema = rest.shift() as ZodRawShape;
-        
-        // Check if the next arg is potentially annotations  
+
+        // Check if the next arg is potentially annotations
         if (rest.length > 1 && typeof rest[0] === "object" && rest[0] !== null && !(isZodRawShape(rest[0]))) {
           // Case: tool(name, paramsSchema, annotations, cb)
           // Or: tool(name, description, paramsSchema, annotations, cb)
