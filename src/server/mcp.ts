@@ -697,7 +697,17 @@ export class McpServer {
     const isZodRawShape = (obj: unknown): obj is ZodRawShape => {
       if (typeof obj !== "object" || obj === null) return false;
       // Check that at least one property is a ZodType instance
-      return Object.values(obj as object).some(v => v instanceof ZodType);
+      return Object.values(obj as object).some(v => {
+        if (v instanceof ZodType) {
+          return true;
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const typeName = (v as any)?._def?.typeName;
+        if (!typeName) {
+          return false;
+        }
+        return typeName === "ZodObject" || typeName === "ZodRawShape" || typeName === "ZodEffects";
+      });
     };
 
     let description: string | undefined;
